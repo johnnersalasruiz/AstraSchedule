@@ -18,7 +18,7 @@ const functionDefinitions = [
     {
         type: "function",
         function: {
-            name: "obtenerResumenEstado",
+            name: "obtener_resumen_estado",
             description: "Obtiene un resumen de grupos filtrados por programa (usar 'IS' o 'IE'), jornada ('Diurna'/'Nocturna'), modalidad ('presencial'/'virtual') y opcionalmente sede (solo para presencial). Ejemplo: programa_id='IS', jornada='Diurna', modalidad='virtual'.",
             parameters: {
                 type: "object",
@@ -35,38 +35,59 @@ const functionDefinitions = [
     {
         type: "function",
         function: {
-            name: "listarGruposSinHorario",
-            description: "Úsala SOLO cuando el usuario pida explícitamente la LISTA de grupos sin horario (por ejemplo, 'lista', 'muéstrame', 'dime cuáles'). Si pregunta 'cuántos', usa obtenerResumenEstado.",
+            name: "listar_grupos_sin_horario",
+            description: "Lista los grupos que aún no tienen horario. Úsala cuando el usuario pida explícitamente una lista. El parámetro 'semestre' debe ser un array de números enteros (ej. [1,2,3,4,5,6,7,8,9,10]). Si el usuario no especifica semestres, usa [1,2,3,4,5,6,7,8,9,10] (todos los semestres). No uses años ni números grandes.",
             parameters: {
                 type: "object",
                 properties: {
                     programa_id: { type: "string" },
-                    semestre: { type: "array", items: { type: "integer" } },
-                    jornada: { type: "string" },
-                    sede: { type: "string" }
+                    jornada: { type: "string", enum: ["Diurna", "Nocturna"] },
+                    modalidad: { type: "string", enum: ["presencial", "virtual"] },
+                    sede: { type: "string", description: "Opcional. Solo para presencial." },
+                    semestre: {
+                        type: "array",
+                        items: { type: "integer" },
+                        description: "Lista de semestres. Por defecto [1,2,3,4,5,6,7,8,9,10]."
+                    }
                 },
-                required: ["programa_id", "semestre", "jornada"]
+                required: ["programa_id", "jornada", "modalidad"]
             }
         }
     },
     {
         type: "function",
         function: {
-            name: "asignarClase",
-            description: "Asigna una clase (grupo, docente, aula, franja).",
+            name: "generar_horarios_pendientes",
+            description: "Genera horarios automáticamente para todos los grupos sin horario que cumplan los criterios (programa, jornada, modalidad, sede). Evalúa fusiones de grupos de diferentes programas con misma materia y jornada.",
+            parameters: {
+                type: "object",
+                properties: {
+                    programa_id: { type: "string", description: "Código del programa (IS o IE)" },
+                    jornada: { type: "string", enum: ["Diurna", "Nocturna"] },
+                    modalidad: { type: "string", enum: ["presencial", "virtual"] },
+                    sede: { type: "string", description: "Código de sede (NORTE, SUR). Obligatorio si modalidad=presencial." }
+                },
+                required: ["programa_id", "jornada", "modalidad"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "asignar_clase",
+            description: "Asigna una clase a un grupo, docente, aula y franja horaria específica.",
             parameters: {
                 type: "object",
                 properties: {
                     grupo_id: { type: "integer" },
                     docente_id: { type: "integer" },
                     aula_id: { type: "integer" },
-                    dia: { type: "string", enum: ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes"] },
-                    hora_inicio: { type: "string", pattern: "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$" },
-                    hora_fin: { type: "string" },
-                    es_definitiva: { type: "boolean" }
+                    franja_id: { type: "integer", description: "ID de la franja horaria (obtenido de proponer_horario o de listar franjas)." },
+                    es_definitiva: { type: "boolean", description: "Si es true, el estado queda confirmado; si false, queda propuesto." }
                 },
-                required: ["grupo_id", "docente_id", "aula_id", "dia", "hora_inicio", "hora_fin"]
+                required: ["grupo_id", "docente_id", "aula_id", "franja_id"]
             }
+
         }
     },
     // Agrega aquí el resto de las funciones (proponerHorario, detectarConflictos, etc.)
@@ -100,6 +121,8 @@ async function iniciarAgente() {
             Luego, debes agregar una pregunta adicional según el caso:
             - Si sin_horario > 0, pregunta de forma natural: "¿Deseas que genere los horarios para los [sin_horario] grupos pendientes?"
             - Si sin_horario === 0, pregunta: "¿Hay algo más en lo que pueda ayudarte? Por ejemplo, listar grupos, asignar una clase, consultar disponibilidad de docentes, etc."
+
+            **Importante**: Si el usuario responde afirmativamente (por ejemplo, "sí", "sí, por favor", "adelante", "genera los horarios") después de que le hayas preguntado "¿Deseas que genere los horarios...?", entonces debes invocar la herramienta 'generarHorariosPendientes' con los mismos parámetros (programa_id, jornada, modalidad, sede) que usaste en 'obtenerResumenEstado'. No pidas confirmación adicional.
 
             Sustituye los valores entre corchetes por los datos reales del JSON. Siempre responde en español, de manera amable, clara y profesional.`
         }
