@@ -19,15 +19,16 @@ const functionDefinitions = [
         type: "function",
         function: {
             name: "obtenerResumenEstado",
-            description: "Úsala cuando el usuario pida un RESUMEN, CONTEO, PORCENTAJE o ESTADO GENERAL de grupos sin horario, por ejemplo: 'cuántos grupos sin horario', 'resumen de horarios', 'porcentaje de asignación', 'estado de los grupos'. Devuelve total de grupos, porcentaje de completitud y desglose por estado (sin horario, propuesto, confirmado, conflicto).",
+            description: "Obtiene un resumen de grupos filtrados por programa (usar 'IS' o 'IE'), jornada ('Diurna'/'Nocturna'), modalidad ('presencial'/'virtual') y opcionalmente sede (solo para presencial). Ejemplo: programa_id='IS', jornada='Diurna', modalidad='virtual'.",
             parameters: {
                 type: "object",
                 properties: {
-                    programa_id: { type: "string", description: "Código del programa (IS, IE)" },
+                    programa_id: { type: "string", description: "Código del programa académico. Debe ser exactamente 'IS' para Ingeniería de Sistemas o 'IE' para Ingeniería Electrónica. No uses el nombre completo." },
                     jornada: { type: "string", enum: ["Diurna", "Nocturna"] },
-                    sede: { type: "string", description: "Código de sede (NORTE, SUR) o null para virtual" }
+                    modalidad: { type: "string", enum: ["presencial", "virtual"] },
+                    sede: { type: "string", description: "Opcional. Código de sede (NORTE, SUR). Solo si modalidad es presencial." }
                 },
-                required: ["programa_id", "jornada"]
+                required: ["programa_id", "jornada", "modalidad"]
             }
         }
     },
@@ -35,7 +36,7 @@ const functionDefinitions = [
         type: "function",
         function: {
             name: "listarGruposSinHorario",
-            description: "Úsala solo cuando el usuario pida explícitamente la LISTA DETALLADA de grupos sin horario, por ejemplo: 'lista los grupos sin horario', 'muéstrame los grupos', 'qué grupos no tienen horario'. NO la uses para preguntas de cantidad o resumen.",
+            description: "Úsala SOLO cuando el usuario pida explícitamente la LISTA de grupos sin horario (por ejemplo, 'lista', 'muéstrame', 'dime cuáles'). Si pregunta 'cuántos', usa obtenerResumenEstado.",
             parameters: {
                 type: "object",
                 properties: {
@@ -84,7 +85,24 @@ const rl = readline.createInterface({
 async function iniciarAgente() {
     console.log("🤖 Agente UNIAJC - Optimización de Horarios (Groq)\nEscribe 'salir' para terminar.\n");
     const messages = [
-        { role: "system", content: "Eres un asistente experto en gestión académica. Para preguntas que pidan un resumen, conteo o porcentaje ('cuántos', 'resumen', 'estado'), debes usar la herramienta 'obtenerResumenEstado'. Para listados detallados, usa 'listarGruposSinHorario'. Siempre responde en español." }
+        {
+            role: "system",
+            content: `Eres un asistente experto en gestión académica. Para responder a preguntas sobre resúmenes de horarios, debes usar la herramienta 'obtenerResumenEstado'.
+
+            Cuando recibas el resultado de esa herramienta (un JSON con los campos total_grupos, porcentaje_completitud, por_estado, programa_id, jornada, modalidad y sede), SIEMPRE debes formatear tu respuesta de la siguiente manera, usando lenguaje natural:
+
+            "Según el resumen, hay [total_grupos] grupos [modalidad] en total en [programa] (jornada [jornada], sede [sede]). De ellos, [sin_horario] aún no tienen horario asignado ([porcentaje_completitud]% completado). Desglose:
+            - Sin horario: [sin_horario] grupos
+            - Propuesto: [propuesto] grupos
+            - Confirmado: [confirmado] grupos
+            - Conflicto: [conflicto] grupos"
+
+            Luego, debes agregar una pregunta adicional según el caso:
+            - Si sin_horario > 0, pregunta de forma natural: "¿Deseas que genere los horarios para los [sin_horario] grupos pendientes?"
+            - Si sin_horario === 0, pregunta: "¿Hay algo más en lo que pueda ayudarte? Por ejemplo, listar grupos, asignar una clase, consultar disponibilidad de docentes, etc."
+
+            Sustituye los valores entre corchetes por los datos reales del JSON. Siempre responde en español, de manera amable, clara y profesional.`
+        }
     ];
 
     const pregunta = () => {

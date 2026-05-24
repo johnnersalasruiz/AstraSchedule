@@ -1,26 +1,19 @@
-// tools/consulta/obtener-resumen-estado.js
-import { pool } from '../../scripts/db.js';
-
-/**
- * Obtiene un resumen del estado de asignación de horarios para un programa, jornada y sede.
- * @param {Object} params - Parámetros de la consulta.
- * @param {string} params.programa_id - Código del programa ('IS' o 'IE').
- * @param {string} params.jornada - 'Diurna' o 'Nocturna'.
- * @param {string} [params.sede] - 'NORTE', 'SUR' o null (para grupos virtuales).
- * @returns {Promise<Object>} Resumen con total_grupos, porcentaje_completitud y por_estado.
- * @throws {Error} Si el programa no existe o hay error en la BD.
- */
-export async function obtenerResumenEstado({ programa_id, jornada, sede = null }) {
-    // Validación básica
-    if (!programa_id || !jornada) {
-        throw new Error('Faltan parámetros obligatorios: programa_id y jornada');
+export async function obtenerResumenEstado({ programa_id, jornada, modalidad, sede = null }) {
+    // Validaciones
+    if (!programa_id || !jornada || !modalidad) {
+        throw new Error('Faltan parámetros obligatorios: programa_id, jornada y modalidad');
+    }
+    if (modalidad === 'virtual') {
+        sede = null;   // Los grupos virtuales no tienen sede física
+    }
+    if (modalidad === 'presencial' && !sede) {
+        throw new Error('Para modalidad presencial, sede es obligatoria');
     }
 
     const query = `
     WITH grupos_filtrados AS (
       SELECT 
         g.id,
-        g.estado AS grupo_estado,
         h.id AS horario_id,
         h.estado AS horario_estado
       FROM grupos g
@@ -30,12 +23,13 @@ export async function obtenerResumenEstado({ programa_id, jornada, sede = null }
       LEFT JOIN horario_asignado h ON h.grupo_id = g.id AND h.estado <> 'cancelado'
       WHERE m.programa_id = (SELECT id FROM programas WHERE codigo = $1)
         AND j.codigo ILIKE $2
-        AND (s.codigo ILIKE $3 OR ($3 IS NULL AND g.modalidad = 'virtual'))
-        AND g.estado = 'abierto'   -- Solo grupos abiertos
+        AND g.modalidad = $3
+        AND ($4 IS NULL OR s.codigo ILIKE $4)
+        AND g.estado = 'abierto'
     )
     SELECT
       COUNT(*) AS total_grupos,
-      ROUND(100.0 * COUNT(horario_id) / NULLIF(COUNT(*), 0), 2) AS porcentaje_completitud,
+      COALESCE(ROUND(100.0 * COUNT(horario_id) / NULLIF(COUNT(*), 0), 2), 0.00) AS porcentaje_completitud,
       jsonb_build_object(
         'sin_horario', COUNT(*) FILTER (WHERE horario_id IS NULL),
         'propuesto',   COUNT(*) FILTER (WHERE horario_estado = 'propuesto'),
@@ -45,12 +39,18 @@ export async function obtenerResumenEstado({ programa_id, jornada, sede = null }
     FROM grupos_filtrados
   `;
 
-    const values = [programa_id, jornada, sede || null];
+    const values = [programa_id, jornada, modalidad, sede];
     const result = await pool.query(query, values);
 
-    if (result.rows.length === 0) {
-        throw new Error('programa_not_found');
+    if (result.rows.length === 0 || result.rows[0].total_grupos === 0) {
+        throw new Error('No se encontraron grupos con los criterios especificados');
     }
 
-    return result.rows[0];
+    return {
+        ...result.rows[0],
+        programa_id,
+        jornada,
+        modalidad,
+        sede: sede || (modalidad === 'virtual' ? 'virtual' : null)
+    };
 }
