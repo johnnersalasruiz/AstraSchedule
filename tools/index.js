@@ -1,6 +1,7 @@
 // Consulta
 export { obtener_resumen_estado } from './consulta/obtener_resumen_estado.js';
 export { listar_grupos_sin_horario } from './consulta/listar_grupos_sin_horario.js';
+export { listar_horarios_asignados } from './consulta/listar_horarios_asignados.js';
 
 // Generación
 export { evaluar_fusion_grupos } from './generacion/evaluar_fusion_grupos.js';

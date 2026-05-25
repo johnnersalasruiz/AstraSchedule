@@ -90,6 +90,24 @@ const functionDefinitions = [
 
         }
     },
+    {
+        type: "function",
+        function: {
+            name: "listar_horarios_asignados",
+            description: "Lista los horarios que ya han sido asignados (estado propuesto, confirmado o conflicto) para un programa, jornada, modalidad y sede. Útil cuando el usuario pide 'muéstrame los horarios que se asignaron' o 'lista los horarios propuestos'.",
+            parameters: {
+                type: "object",
+                properties: {
+                    programa_id: { type: "string", description: "Código del programa (IS o IE)" },
+                    jornada: { type: "string", enum: ["Diurna", "Nocturna"] },
+                    modalidad: { type: "string", enum: ["presencial", "virtual"] },
+                    sede: { type: "string", description: "Opcional. Sede si modalidad=presencial" },
+                    estado: { type: "string", enum: ["propuesto", "confirmado", "conflicto", "todos"], description: "Filtro por estado. Por defecto 'propuesto'." }
+                },
+                required: ["programa_id", "jornada", "modalidad"]
+            }
+        }
+    }
     // Agrega aquí el resto de las funciones (proponerHorario, detectarConflictos, etc.)
 ];
 
@@ -124,7 +142,55 @@ async function iniciarAgente() {
 
             **Importante**: Si el usuario responde afirmativamente (por ejemplo, "sí", "sí, por favor", "adelante", "genera los horarios") después de que le hayas preguntado "¿Deseas que genere los horarios...?", entonces debes invocar la herramienta 'generarHorariosPendientes' con los mismos parámetros (programa_id, jornada, modalidad, sede) que usaste en 'obtenerResumenEstado'. No pidas confirmación adicional.
 
-            Sustituye los valores entre corchetes por los datos reales del JSON. Siempre responde en español, de manera amable, clara y profesional.`
+            Sustituye los valores entre corchetes por los datos reales del JSON. Siempre responde en español, de manera amable, clara y profesional.
+            
+            Si el usuario pide explícitamente "muéstrame los horarios", "lista los horarios asignados", "qué horarios se han generado", debes usar la herramienta 'listar_horarios_asignados'. Puedes filtrar por estado ('propuesto', 'confirmado', 'conflicto', 'todos'). Si no se especifica estado, asume 'propuesto'.
+            
+            Para 'listar_grupos_sin_horario': cuando recibas el resultado (array de objetos), debes presentar una lista enumerada (1., 2., 3., ...). Cada elemento debe incluir:
+            - Código de materia, nombre de materia y número de grupo (ej. "IS-101 - Lógica y Razonamiento, grupo A").
+            - Luego, en líneas aparte con viñetas (-), muestra la siguiente información (solo la que esté disponible):
+            - Cupo máximo: [cupo_max]
+            - Modalidad: [presencial o virtual]
+            - Sede: [código de sede o 'virtual']
+
+            Ejemplo de formato esperado (para grupo presencial):
+            1. IS-101 - Lógica y Razonamiento, grupo A: 
+            - Cupo máximo: 30
+            - Modalidad: presencial
+            - Sede: NORTE
+
+            2. IS-102 - Matemáticas Básica, grupo A: 
+            - Cupo máximo: 30
+            - Modalidad: presencial
+            - Sede: NORTE
+
+            Si la lista está vacía, indica que no hay grupos sin horario con esos criterios.
+
+            Para 'listar_horarios_asignados': cuando recibas el resultado (array de objetos), debes presentar una lista enumerada (1., 2., 3., ...). Cada elemento debe incluir:
+            - Código de materia, nombre de materia y grupo (ej. "IS-101 - Lógica y Razonamiento, grupo A").
+            - Luego, en líneas aparte con viñetas (-), muestra:
+            - Docente: [nombre del docente]
+            - Salón: [código del salón]
+            - Día: [día de la semana]
+            - Hora: [hora_inicio - hora_fin]
+            - Estado: [propuesto, confirmado, conflicto]
+
+            Ejemplo de formato esperado:
+            1. IS-101 - Lógica y Razonamiento, grupo A: 
+            - Docente: Felipe Vasco
+            - Salón: N-001
+            - Día: Lunes
+            - Hora: 07:00-10:00
+            - Estado: Propuesto
+            2. IS-102 - Matemáticas Básica, grupo A: 
+            - Docente: Lucía Restrepo
+            - Salón: N-001
+            - Día: Martes
+            - Hora: 07:00-10:00
+            - Estado: Propuesto
+            ...
+            No uses otros formatos. Si la lista está vacía, indica que no hay horarios asignados con ese filtro.
+            `
         }
     ];
 

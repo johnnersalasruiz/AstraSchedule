@@ -42,8 +42,8 @@ export async function listar_grupos_sin_horario({ programa_id, semestre, jornada
     }
 
     const query = `
-    SELECT g.id, m.codigo AS materia_codigo, m.nombre AS materia_nombre, g.numero, 
-           j.codigo AS jornada, g.modalidad, COALESCE(s.codigo, 'virtual') AS sede, g.cupo_max
+    SELECT g.id, m.codigo AS materia_codigo, m.nombre AS materia_nombre, g.numero, g.jornada_id,
+           j.codigo AS jornada, g.modalidad, COALESCE(s.codigo, 'virtual') AS sede, g.cupo_max, m.tipo_aula_requerida
     FROM grupos g
     JOIN materias m ON m.id = g.materia_id
     JOIN jornadas j ON j.id = g.jornada_id

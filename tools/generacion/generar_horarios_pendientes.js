@@ -1,19 +1,64 @@
+// tools/generacion/generar_horarios_pendientes.js
+import { pool } from '../../scripts/db.js';
 import { listar_grupos_sin_horario } from '../consulta/listar_grupos_sin_horario.js';
-import { evaluar_fusion_grupos } from './evaluar_fusion_grupos.js';
-import { proponer_horario } from './proponer_horario.js';
 import { asignar_clase } from './asignar_clase.js';
 import { notificar_docente, notificar_director } from '../notificaciones/index.js';
 
-// Configuración de reintentos
-const MAX_REINTENTOS = 3;
-const ESPERA_ENTRE_REINTENTOS = 500; // milisegundos (opcional)
+// Función auxiliar: obtener todas las franjas del periodo activo para una jornada
+async function obtenerFranjasPorJornada(jornada_id) {
+    const res = await pool.query(`
+    SELECT f.id, b.codigo, f.dia, b.hora_inicio, b.hora_fin
+    FROM franjas_horarias f
+    JOIN bloques_horarios b ON b.id = f.bloque_id
+    JOIN periodos_academicos p ON p.id = f.periodo_id AND p.activo = true
+    WHERE b.jornada_id = $1
+    ORDER BY f.id
+  `, [jornada_id]);
+    return res.rows;
+}
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+// Buscar docente disponible en una franja, excluyendo ciertos IDs
+async function buscarDocenteDisponible(franja_id, docentesExcluidos = []) {
+    let query = `
+    SELECT d.id, d.nombre
+    FROM docentes d
+    WHERE d.activo = true
+      AND EXISTS (SELECT 1 FROM disponibilidad_docente dd WHERE dd.docente_id = d.id AND dd.franja_id = $1)
+  `;
+    const params = [franja_id];
+    if (docentesExcluidos.length > 0) {
+        const placeholders = docentesExcluidos.map((_, i) => `$${i + 2}`).join(',');
+        query += ` AND d.id NOT IN (${placeholders})`;
+        params.push(...docentesExcluidos);
+    }
+    query += ` LIMIT 1`;
+    const res = await pool.query(query, params);
+    return res.rows[0] || null;
+}
+
+// Buscar aula disponible en una franja
+async function buscarAulaDisponible(capacidad_min, tipo_aula_requerida, franja_id) {
+    const query = `
+    SELECT s.id
+    FROM salones s
+    WHERE s.disponible = true
+      AND s.capacidad >= $1
+      AND (s.tipo = $2 OR $2 = 'cualquiera')
+      AND NOT EXISTS (
+        SELECT 1 FROM horario_asignado h
+        WHERE h.salon_id = s.id AND h.franja_id = $3 AND h.estado <> 'cancelado'
+      )
+    LIMIT 1
+  `;
+    const res = await pool.query(query, [capacidad_min, tipo_aula_requerida, franja_id]);
+    return res.rows[0] || null;
 }
 
 export async function generar_horarios_pendientes({ programa_id, jornada, modalidad, sede = null }) {
-    // 1. Obtener grupos sin horario
+    console.log(`🚀 Iniciando generación para: ${programa_id}, ${jornada}, ${modalidad}, sede=${sede}`);
+
+    // 1. Obtener grupos sin horario (todos los semestres)
+    // Nota: listar_grupos_sin_horario debe devolver jornada_id y tipo_aula_requerida
     const grupos = await listar_grupos_sin_horario({
         programa_id,
         semestre: Array.from({ length: 12 }, (_, i) => i + 1),
@@ -22,140 +67,104 @@ export async function generar_horarios_pendientes({ programa_id, jornada, modali
         sede
     });
 
+    console.log(`📊 Grupos sin horario: ${grupos.length}`);
     if (grupos.length === 0) {
         return { mensaje: 'No hay grupos pendientes.', asignaciones: [] };
     }
 
-    // 2. Agrupar por materia (código) y jornada
-    const gruposPorMateria = {};
-    for (const grupo of grupos) {
-        const key = `${grupo.materia_codigo}|${grupo.jornada}`;
-        if (!gruposPorMateria[key]) gruposPorMateria[key] = [];
-        gruposPorMateria[key].push(grupo);
+    // 2. Obtener la jornada_id a partir del primer grupo (todos deberían tener la misma)
+    // Si por alguna razón no viene, forzar diurna (1) como fallback
+    const jornada_id = grupos[0]?.jornada_id || 1;
+    const todasLasFranjas = await obtenerFranjasPorJornada(jornada_id);
+    console.log(`📅 Franjas encontradas para jornada ${jornada_id}: ${todasLasFranjas.map(f => f.id).join(', ')}`);
+
+    if (todasLasFranjas.length === 0) {
+        return { mensaje: `No hay franjas horarias para la jornada especificada.`, asignaciones: [] };
     }
 
     const resultados = [];
-    const docentesExcluidosGlobal = []; // Acumula docentes que ya se asignaron en alguna franja para evitar solapamientos
+    const franjasUsadas = new Set();   // IDs de franjas ya asignadas
+    const docentesUsados = new Set();  // IDs de docentes ya asignados
 
-    for (const gruposMismaMateria of Object.values(gruposPorMateria)) {
-        let grupoFusionado = null;
-        // Si hay al menos dos grupos de la misma materia, evaluar fusión
-        if (gruposMismaMateria.length >= 2) {
-            const ids = gruposMismaMateria.map(g => g.id);
-            const fusion = await evaluar_fusion_grupos({ grupos_ids: ids });
-            if (fusion.fusion_posible) {
-                grupoFusionado = { ...gruposMismaMateria[0] };
-                grupoFusionado.cupo_max = fusion.total_estudiantes;
-                grupoFusionado.salon_sugerido = fusion.salon_sugerido.id;
-                // Los demás grupos se marcarán como fusionados y no se asignarán individualmente
-            }
-        }
+    for (const grupo of grupos) {
+        let exito = false;
+        // Recorrer franjas en orden (no usar las ya usadas)
+        for (const franja of todasLasFranjas) {
+            if (franjasUsadas.has(franja.id)) continue;
 
-        const gruposAsignar = grupoFusionado ? [grupoFusionado] : gruposMismaMateria;
+            const docente = await buscarDocenteDisponible(franja.id, [...docentesUsados]);
+            if (!docente) continue;
 
-        for (const grupo of gruposAsignar) {
-            let exito = false;
-            let ultimoError = null;
-            let intentos = 0;
-            let docentesExcluidosPorGrupo = [...docentesExcluidosGlobal];
+            const aula = await buscarAulaDisponible(grupo.cupo_max, grupo.tipo_aula_requerida, franja.id);
+            if (!aula) continue;
 
-            while (!exito && intentos < MAX_REINTENTOS) {
-                intentos++;
-                try {
-                    // 3. Proponer horario (con exclusión de docentes ya usados o conflictivos)
-                    const propuesta = await proponer_horario({
-                        grupo_id: grupo.id,
-                        excluir_docentes: docentesExcluidosPorGrupo,
-                        salon_recomendado: grupo.salon_sugerido || null
-                    });
-
-                    if (!propuesta.horarios_propuestos.length) {
-                        throw new Error('No se encontró franja horaria disponible');
-                    }
-
-                    const mejorFranja = propuesta.horarios_propuestos[0];
-                    const docenteId = mejorFranja.docente_sugerido?.id;
-                    if (!docenteId) {
-                        throw new Error('No se encontró docente disponible');
-                    }
-
-                    // 4. Intentar asignar la clase
-                    const asignacion = await asignar_clase({
-                        grupo_id: grupo.id,
-                        docente_id: docenteId,
-                        aula_id: mejorFranja.aula_id,
-                        franja_id: mejorFranja.franja_id,
-                        es_definitiva: false
-                    });
-
-                    // Si llegamos aquí, la asignación fue exitosa
-                    exito = true;
-                    resultados.push({
-                        grupo_id: grupo.id,
-                        estado: 'asignado',
-                        horario: mejorFranja,
-                        docente_id: docenteId,
-                        salon_id: mejorFranja.aula_id,
-                        asignacion_id: asignacion.id,
-                        intentos
-                    });
-
-                    // Agregar el docente a la lista global de excluidos para evitar solapamientos
-                    docentesExcluidosGlobal.push(docenteId);
-
-                    // Notificar al docente (solo si la asignación fue exitosa)
-                    await notificar_docente({
-                        docente_id: docenteId,
-                        asunto: 'Nueva asignación de horario',
-                        mensaje: `Se te ha asignado el grupo ${grupo.numero} de la materia ${grupo.materia_codigo} en ${mejorFranja.dia} de ${mejorFranja.hora_inicio} a ${mejorFranja.hora_fin}. Por favor revisa y confirma.`
-                    });
-
-                } catch (error) {
-                    ultimoError = error;
-                    console.error(`⚠️ Error en grupo ${grupo.id} (intento ${intentos}/${MAX_REINTENTOS}):`, error.message);
-
-                    // Si el error es por solapamiento de docente, extraer el docente_id del mensaje y excluirlo
-                    if (error.message.includes('SOLAPAMIENTO_DOCENTE')) {
-                        const match = error.message.match(/docente (\d+)/);
-                        if (match) {
-                            const docenteConflictivo = parseInt(match[1], 10);
-                            if (!docentesExcluidosPorGrupo.includes(docenteConflictivo)) {
-                                docentesExcluidosPorGrupo.push(docenteConflictivo);
-                                console.log(`🚫 Docente ${docenteConflictivo} excluido para futuros intentos del grupo ${grupo.id}`);
-                            }
-                        }
-                    }
-                    // Si el error es por franja ocupada (aula o docente), simplemente reintentamos con la misma exclusión
-                    if (intentos < MAX_REINTENTOS) {
-                        await sleep(ESPERA_ENTRE_REINTENTOS);
-                    }
-                }
-            }
-
-            if (!exito) {
+            // Intentar asignar la clase
+            try {
+                const asignacion = await asignar_clase({
+                    grupo_id: grupo.id,
+                    docente_id: docente.id,
+                    aula_id: aula.id,
+                    franja_id: franja.id,
+                    es_definitiva: false
+                });
+                exito = true;
                 resultados.push({
                     grupo_id: grupo.id,
-                    estado: 'error',
-                    motivo: ultimoError?.message || 'Fallo después de múltiples reintentos',
-                    intentos
+                    estado: 'asignado',
+                    horario: {
+                        dia: franja.dia,
+                        hora_inicio: franja.hora_inicio,
+                        hora_fin: franja.hora_fin,
+                        franja_id: franja.id,
+                        aula_id: aula.id,
+                        docente_sugerido: docente
+                    },
+                    docente_id: docente.id,
+                    salon_id: aula.id,
+                    asignacion_id: asignacion.id
                 });
+                franjasUsadas.add(franja.id);
+                docentesUsados.add(docente.id);
+                // Notificar al docente
+                await notificar_docente({
+                    docente_id: docente.id,
+                    asunto: 'Nueva asignación de horario',
+                    mensaje: `Se te ha asignado el grupo ${grupo.numero} de la materia ${grupo.materia_codigo} en ${franja.dia} de ${franja.hora_inicio} a ${franja.hora_fin}. Por favor revisa y confirma.`
+                });
+                break; // grupo asignado, pasar al siguiente grupo
+            } catch (error) {
+                console.error(`❌ Error asignando grupo ${grupo.id} en franja ${franja.id}:`, error.message);
+                // Si el error es por docente solapado, agregarlo a excluidos y reintentar en otra franja
+                if (error.message.includes('SOLAPAMIENTO_DOCENTE')) {
+                    const match = error.message.match(/docente (\d+)/);
+                    if (match) docentesUsados.add(parseInt(match[1]));
+                }
+                // Si es por otro conflicto, simplemente continuar con la siguiente franja
             }
-        }
-    }
+        } // fin for franjas
 
-    // Notificar al director con el resumen
+        if (!exito) {
+            resultados.push({
+                grupo_id: grupo.id,
+                estado: 'error',
+                motivo: 'No se encontró franja con docente y aula disponibles después de múltiples intentos'
+            });
+        }
+    } // fin for grupos
+
     const asignados = resultados.filter(r => r.estado === 'asignado').length;
     const errores = resultados.filter(r => r.estado === 'error').length;
+    console.log(`✅ Asignados: ${asignados}, ❌ Errores: ${errores}`);
 
+    // Notificar al director
     await notificar_director({
         director_email: 'director.ingenieria@uniajc.edu.co',
         asunto: 'Generación de horarios completada',
-        mensaje: `Se generaron ${asignados} horarios para los grupos pendientes. Errores: ${errores}. Revisa los detalles en el sistema.`
+        mensaje: `Se generaron ${asignados} horarios para los grupos pendientes. Errores: ${errores}.`
     });
 
     return {
         mensaje: `Proceso completado. Se asignaron ${asignados} horarios. Errores: ${errores}.`,
-        asignaciones: resultados,
-        docentes_excluidos: docentesExcluidosGlobal
+        asignaciones: resultados
     };
 }
