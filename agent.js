@@ -90,6 +90,147 @@ const functionDefinitions = [
 
         }
     },
+
+    {
+        type: "function",
+        function: {
+            name: "enviar_formato_prematricula",
+            description: "Genera y simula el envío del formato de prematrícula al director del programa con los datos del estudiante y las materias solicitadas.",
+            parameters: {
+                type: "object",
+                properties: {
+                    estudiante_id: { type: "integer", description: "ID del estudiante en la base de datos" },
+                    estudiante_nombre: { type: "string", description: "Nombre completo del estudiante" },
+                    programa_id: { type: "string", description: "Código del programa (ej. IS o IE)" },
+                    semestre_actual: { type: "integer", description: "Semestre actual que cursa el estudiante" },
+                    materias_solicitadas: {
+                        type: "array",
+                        items: { type: "integer" },
+                        description: "Lista de IDs numéricos de las materias solicitadas"
+                    }
+                },
+                required: ["estudiante_id", "estudiante_nombre", "programa_id", "semestre_actual", "materias_solicitadas"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "procesar_respuesta_director_prematricula",
+            description: "Procesa y registra la decisión inicial del director de programa respecto a una solicitud de prematrícula enviada previamente.",
+            parameters: {
+                type: "object",
+                properties: {
+                    solicitud_id: { type: "integer", description: "ID de la solicitud (equivale al ID del estudiante)" },
+                    respuesta: { type: "string", description: "Decisión explícita del director (ej. 'Aprobado', 'Rechazado', 'Con ajustes')" },
+                    observaciones_director: { type: "string", description: "Observaciones o comentarios adicionales del director" },
+                    ajustes_horario: { type: "string", description: "Detalle de los ajustes solicitados, si el director pide cambios" }
+                },
+                required: ["solicitud_id", "respuesta"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "aprobar_prematricula",
+            description: "Aprueba definitivamente las asignaturas de la prematrícula de un estudiante en la base de datos, actualizando el estado de sus inscripciones a 'aprobada'.",
+            parameters: {
+                type: "object",
+                properties: {
+                    solicitud_id: { type: "integer", description: "ID de la solicitud (equivale al ID del estudiante)" },
+                    director_id: { type: "integer", description: "ID numérico del director que realiza la aprobación" },
+                    materias_aprobadas: {
+                        type: "array",
+                        items: { type: "integer" },
+                        description: "Lista de IDs numéricos de las materias que fueron autorizadas finalmente"
+                    }
+                },
+                required: ["solicitud_id", "director_id", "materias_aprobadas"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "enviar_solicitud_matricula",
+            description: "Procesa la solicitud inicial de matrícula de un estudiante. Busca grupos disponibles para las materias solicitadas y registra la inscripción preliminar (activa), evaluando reglas como paz y salvo o prerrequisitos.",
+            parameters: {
+                type: "object",
+                properties: {
+                    estudiante_id: { type: "integer", description: "ID numérico del estudiante" },
+                    periodo_id: { type: "integer", description: "ID del periodo académico actual (ej. 1)" },
+                    materias: {
+                        type: "array",
+                        items: { type: "integer" },
+                        description: "Lista de IDs de las materias solicitadas por el estudiante"
+                    }
+                },
+                required: ["estudiante_id", "periodo_id", "materias"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "procesar_contrapropuesta_docente",
+            description: "Aplica los cambios sugeridos por un docente a un horario propuesto. Valida si la nueva franja y salón no generan cruces con otros horarios.",
+            parameters: {
+                type: "object",
+                properties: {
+                    asignacion_id: { type: "integer", description: "ID numérico de la asignación de horario actual" },
+                    nueva_franja_sugerida: { type: "integer", description: "ID numérico de la nueva franja horaria que sugiere el docente" },
+                    salon_alternativo: { type: "integer", description: "Opcional. ID numérico de un salón distinto sugerido" },
+                    motivo: { type: "string", description: "Motivo por el cual el docente pide el cambio" }
+                },
+                required: ["asignacion_id", "nueva_franja_sugerida"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "generar_alternativa_negociacion",
+            description: "Busca franjas horarias alternativas donde el docente tenga disponibilidad y no tenga otras clases asignadas.",
+            parameters: {
+                type: "object",
+                properties: {
+                    asignacion_id_rechazada: { type: "integer", description: "ID numérico de la asignación que fue rechazada" },
+                    criterios_prioridad: { type: "string", description: "Criterios opcionales para buscar (ej. 'Mismo día', 'Sede norte')" }
+                },
+                required: ["asignacion_id_rechazada"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "bloquear_horario_definitivo",
+            description: "Marca un horario propuesto como 'confirmado' definitivamente tras el acuerdo con el docente.",
+            parameters: {
+                type: "object",
+                properties: {
+                    asignacion_id_aceptada: { type: "integer", description: "ID numérico de la asignación a confirmar" },
+                    confirmado_por: { type: "string", description: "Persona que confirma (ej. 'Docente', 'Sistema')" }
+                },
+                required: ["asignacion_id_aceptada", "confirmado_por"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "generar_reporte_horario",
+            description: "Genera un reporte estadístico general sobre el estado de la asignación de horarios (propuestos, confirmados, conflictos) y la carga de los docentes.",
+            parameters: {
+                type: "object",
+                properties: {
+                    periodo_id: { type: "integer", description: "Opcional. Filtrar el reporte por un periodo académico específico" },
+                    programa_id: { type: "string", description: "Opcional. Filtrar el reporte por programa (ej. 'IS' o 'IE')" }
+                }
+            }
+        }
+    }
     // Agrega aquí el resto de las funciones (proponerHorario, detectarConflictos, etc.)
 ];
 
