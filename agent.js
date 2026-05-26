@@ -18,7 +18,7 @@ const functionDefinitions = [
     {
         type: "function",
         function: {
-            name: "obtenerResumenEstado",
+            name: "obtener_resumen_estado",
             description: "Obtiene un resumen de grupos filtrados por programa (usar 'IS' o 'IE'), jornada ('Diurna'/'Nocturna'), modalidad ('presencial'/'virtual') y opcionalmente sede (solo para presencial). Ejemplo: programa_id='IS', jornada='Diurna', modalidad='virtual'.",
             parameters: {
                 type: "object",
@@ -35,40 +35,79 @@ const functionDefinitions = [
     {
         type: "function",
         function: {
-            name: "listarGruposSinHorario",
-            description: "Úsala SOLO cuando el usuario pida explícitamente la LISTA de grupos sin horario (por ejemplo, 'lista', 'muéstrame', 'dime cuáles'). Si pregunta 'cuántos', usa obtenerResumenEstado.",
+            name: "listar_grupos_sin_horario",
+            description: "Lista los grupos que aún no tienen horario. Úsala cuando el usuario pida explícitamente una lista. El parámetro 'semestre' debe ser un array de números enteros (ej. [1,2,3,4,5,6,7,8,9,10]). Si el usuario no especifica semestres, usa [1,2,3,4,5,6,7,8,9,10] (todos los semestres). No uses años ni números grandes.",
             parameters: {
                 type: "object",
                 properties: {
                     programa_id: { type: "string" },
-                    semestre: { type: "array", items: { type: "integer" } },
-                    jornada: { type: "string" },
-                    sede: { type: "string" }
+                    jornada: { type: "string", enum: ["Diurna", "Nocturna"] },
+                    modalidad: { type: "string", enum: ["presencial", "virtual"] },
+                    sede: { type: "string", description: "Opcional. Solo para presencial." },
+                    semestre: {
+                        type: "array",
+                        items: { type: "integer" },
+                        description: "Lista de semestres. Por defecto [1,2,3,4,5,6,7,8,9,10]."
+                    }
                 },
-                required: ["programa_id", "semestre", "jornada"]
+                required: ["programa_id", "jornada", "modalidad"]
             }
         }
     },
     {
         type: "function",
         function: {
-            name: "asignarClase",
-            description: "Asigna una clase (grupo, docente, aula, franja).",
+            name: "generar_horarios_pendientes",
+            description: "Genera horarios automáticamente para todos los grupos sin horario que cumplan los criterios (programa, jornada, modalidad, sede). Evalúa fusiones de grupos de diferentes programas con misma materia y jornada.",
+            parameters: {
+                type: "object",
+                properties: {
+                    programa_id: { type: "string", description: "Código del programa (IS o IE)" },
+                    jornada: { type: "string", enum: ["Diurna", "Nocturna"] },
+                    modalidad: { type: "string", enum: ["presencial", "virtual"] },
+                    sede: { type: "string", description: "Código de sede (NORTE, SUR). Obligatorio si modalidad=presencial." }
+                },
+                required: ["programa_id", "jornada", "modalidad"]
+            }
+        }
+    },
+    {
+        type: "function",
+        function: {
+            name: "asignar_clase",
+            description: "Asigna una clase a un grupo, docente, aula y franja horaria específica.",
             parameters: {
                 type: "object",
                 properties: {
                     grupo_id: { type: "integer" },
                     docente_id: { type: "integer" },
                     aula_id: { type: "integer" },
-                    dia: { type: "string", enum: ["Lunes", "Martes", "Miercoles", "Jueves", "Viernes"] },
-                    hora_inicio: { type: "string", pattern: "^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$" },
-                    hora_fin: { type: "string" },
-                    es_definitiva: { type: "boolean" }
+                    franja_id: { type: "integer", description: "ID de la franja horaria (obtenido de proponer_horario o de listar franjas)." },
+                    es_definitiva: { type: "boolean", description: "Si es true, el estado queda confirmado; si false, queda propuesto." }
                 },
-                required: ["grupo_id", "docente_id", "aula_id", "dia", "hora_inicio", "hora_fin"]
+                required: ["grupo_id", "docente_id", "aula_id", "franja_id"]
             }
+
         }
     },
+    {
+        type: "function",
+        function: {
+            name: "listar_horarios_asignados",
+            description: "Lista los horarios que ya han sido asignados (estado propuesto, confirmado o conflicto) para un programa, jornada, modalidad y sede. Útil cuando el usuario pide 'muéstrame los horarios que se asignaron' o 'lista los horarios propuestos'.",
+            parameters: {
+                type: "object",
+                properties: {
+                    programa_id: { type: "string", description: "Código del programa (IS o IE)" },
+                    jornada: { type: "string", enum: ["Diurna", "Nocturna"] },
+                    modalidad: { type: "string", enum: ["presencial", "virtual"] },
+                    sede: { type: "string", description: "Opcional. Sede si modalidad=presencial" },
+                    estado: { type: "string", enum: ["propuesto", "confirmado", "conflicto", "todos"], description: "Filtro por estado. Por defecto 'propuesto'." }
+                },
+                required: ["programa_id", "jornada", "modalidad"]
+            }
+        }
+    }
     // Agrega aquí el resto de las funciones (proponerHorario, detectarConflictos, etc.)
 ];
 
@@ -101,7 +140,57 @@ async function iniciarAgente() {
             - Si sin_horario > 0, pregunta de forma natural: "¿Deseas que genere los horarios para los [sin_horario] grupos pendientes?"
             - Si sin_horario === 0, pregunta: "¿Hay algo más en lo que pueda ayudarte? Por ejemplo, listar grupos, asignar una clase, consultar disponibilidad de docentes, etc."
 
-            Sustituye los valores entre corchetes por los datos reales del JSON. Siempre responde en español, de manera amable, clara y profesional.`
+            **Importante**: Si el usuario responde afirmativamente (por ejemplo, "sí", "sí, por favor", "adelante", "genera los horarios") después de que le hayas preguntado "¿Deseas que genere los horarios...?", entonces debes invocar la herramienta 'generarHorariosPendientes' con los mismos parámetros (programa_id, jornada, modalidad, sede) que usaste en 'obtenerResumenEstado'. No pidas confirmación adicional.
+
+            Sustituye los valores entre corchetes por los datos reales del JSON. Siempre responde en español, de manera amable, clara y profesional.
+            
+            Si el usuario pide explícitamente "muéstrame los horarios", "lista los horarios asignados", "qué horarios se han generado", debes usar la herramienta 'listar_horarios_asignados'. Puedes filtrar por estado ('propuesto', 'confirmado', 'conflicto', 'todos'). Si no se especifica estado, asume 'propuesto'.
+            
+            Para 'listar_grupos_sin_horario': cuando recibas el resultado (array de objetos), debes presentar una lista enumerada (1., 2., 3., ...). Cada elemento debe incluir:
+            - Código de materia, nombre de materia y número de grupo (ej. "IS-101 - Lógica y Razonamiento, grupo A").
+            - Luego, en líneas aparte con viñetas (-), muestra la siguiente información (solo la que esté disponible):
+            - Cupo máximo: [cupo_max]
+            - Modalidad: [presencial o virtual]
+            - Sede: [código de sede o 'virtual']
+
+            Ejemplo de formato esperado (para grupo presencial):
+            1. IS-101 - Lógica y Razonamiento, grupo A: 
+            - Cupo máximo: 30
+            - Modalidad: presencial
+            - Sede: NORTE
+
+            2. IS-102 - Matemáticas Básica, grupo A: 
+            - Cupo máximo: 30
+            - Modalidad: presencial
+            - Sede: NORTE
+
+            Si la lista está vacía, indica que no hay grupos sin horario con esos criterios.
+
+            Para 'listar_horarios_asignados': cuando recibas el resultado (array de objetos), debes presentar una lista enumerada (1., 2., 3., ...). Cada elemento debe incluir:
+            - Código de materia, nombre de materia y grupo (ej. "IS-101 - Lógica y Razonamiento, grupo A").
+            - Luego, en líneas aparte con viñetas (-), muestra:
+            - Docente: [nombre del docente]
+            - Salón: [código del salón]
+            - Día: [día de la semana]
+            - Hora: [hora_inicio - hora_fin]
+            - Estado: [propuesto, confirmado, conflicto]
+
+            Ejemplo de formato esperado:
+            1. IS-101 - Lógica y Razonamiento, grupo A: 
+            - Docente: Felipe Vasco
+            - Salón: N-001
+            - Día: Lunes
+            - Hora: 07:00-10:00
+            - Estado: Propuesto
+            2. IS-102 - Matemáticas Básica, grupo A: 
+            - Docente: Lucía Restrepo
+            - Salón: N-001
+            - Día: Martes
+            - Hora: 07:00-10:00
+            - Estado: Propuesto
+            ...
+            No uses otros formatos. Si la lista está vacía, indica que no hay horarios asignados con ese filtro.
+            `
         }
     ];
 
